@@ -1,0 +1,127 @@
+/* Scoped markdown styling - only affects .chat-markdown elements */
+.chat-markdown {
+  line-height: 1.6;
+  color: inherit;
+  font-family: var(--sapFontFamily, "72", "72full", Arial, Helvetica, sans-serif);
+}
+
+.chat-markdown * {
+  font-family: inherit;
+}
+
+.chat-markdown p {
+  margin: 0.5rem 0;
+}
+
+.chat-markdown p:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.chat-markdown li {
+  margin: 0.25rem 0;
+}
+
+.chat-markdown code {
+  background-color: rgba(0, 0, 0, 0.1);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.chat-markdown pre {
+  background-color: rgba(0, 0, 0, 0.1);
+  padding: 0.75rem;
+  border-radius: 0.25rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+
+.chat-markdown pre code {
+  background-color: transparent;
+  padding: 0;
+}
+
+.chat-markdown strong {
+  font-weight: 600;
+}
+
+.chat-markdown em {
+  font-style: italic;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  margin: 0.75rem 0 0.5rem 0;
+  font-weight: 600;
+}
+
+.chat-markdown h1:first-child,
+.chat-markdown h2:first-child,
+.chat-markdown h3:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown a {
+  color: var(--sapLinkColor, #0a6ed1);
+  text-decoration: none;
+}
+
+.chat-markdown a:hover {
+  text-decoration: underline;
+}
+
+.chat-markdown blockquote {
+  border-left: 3px solid var(--sapList_BorderColor, #d9d9d9);
+  padding-left: 1rem;
+  margin: 0.5rem 0;
+  opacity: 0.8;
+}
+
+/* Table styling with elegant borders */
+.chat-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75rem 0;
+  font-size: 0.9em;
+}
+
+.chat-markdown thead {
+  background-color: var(--sapList_HeaderBackground, rgba(0, 0, 0, 0.15));
+}
+
+.chat-markdown th {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  border: 1px solid var(--sapList_BorderColor, rgba(0, 0, 0, 0.12));
+  color: var(--sapList_HeaderTextColor, inherit);
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+.chat-markdown td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--sapList_BorderColor, rgba(0, 0, 0, 0.12));
+}
+
+.chat-markdown tbody tr:hover {
+  background-color: var(--sapList_Hover_Background, rgba(0, 0, 0, 0.03));
+}
+
+.chat-markdown tbody tr:nth-child(even) {
+  background-color: var(--sapList_AlternatingBackground, rgba(0, 0, 0, 0.02));
+}

@@ -1,0 +1,701 @@
+# Super Agent - SAP BTP Kyma Deployment
+# Uses SAP App Router with XSUAA authentication
+# Istio service mesh for traffic management
+
+---
+# Namespace with Istio injection
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: super-agent
+  labels:
+    istio-injection: enabled
+
+---
+# Service Account for XSUAA
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: super-agent-xsuaa-sa
+  namespace: super-agent
+
+---
+# =============================================================================
+# XSUAA Service Instance and Binding
+# =============================================================================
+apiVersion: services.cloud.sap.com/v1alpha1
+kind: ServiceInstance
+metadata:
+  name: super-agent-xsuaa-instance
+  namespace: super-agent
+spec:
+  serviceOfferingName: xsuaa
+  servicePlanName: application
+  parameters:
+    xsappname: super-agent-app
+    tenant-mode: dedicated
+    description: Security profile for Super Agent AI Chat Application
+    scopes:
+      - name: $XSAPPNAME.User
+        description: User Access
+    attributes:
+      - name: Features
+        description: Features of Super Agent Application
+        valueType: string
+    role-templates:
+      - name: User
+        description: Super Agent User
+        scope-references:
+          - $XSAPPNAME.User
+        attribute-references:
+          - Features
+    oauth2-configuration:
+      redirect-uris:
+        - "https://*.kyma.ondemand.com/**"
+        - "http://localhost:5000/**"
+
+---
+apiVersion: services.cloud.sap.com/v1alpha1
+kind: ServiceBinding
+metadata:
+  name: super-agent-xsuaa-binding
+  namespace: super-agent
+spec:
+  serviceInstanceName: super-agent-xsuaa-instance
+  secretName: super-agent-xsuaa-binding-secret
+
+---
+# =============================================================================
+# SAP App Router
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approuter-deployment
+  namespace: super-agent
+  labels:
+    app: approuter-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: approuter-app
+  template:
+    metadata:
+      labels:
+        app: approuter-app
+    spec:
+      volumes:
+        - name: xs-app
+          configMap:
+            name: approuter-xs-app-configmap
+        - name: xsuaa-binding
+          secret:
+            secretName: super-agent-xsuaa-binding-secret
+      containers:
+        - name: approuter-container
+          image: sapse/approuter:19.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+              name: approuter
+          resources:
+            requests:
+              cpu: "125m"
+              memory: "512M"
+            limits:
+              cpu: "500m"
+              memory: "1024M"
+          volumeMounts:
+            - name: xs-app
+              mountPath: /app/xs-app.json
+              subPath: xs-app.json
+              readOnly: true
+            - name: xsuaa-binding
+              mountPath: /etc/secrets/sapcp/xsuaa/super-agent-xsuaa-instance
+              readOnly: true
+          env:
+            - name: SESSION_TIMEOUT
+              value: "480"
+            - name: XS_APP_LOG_LEVEL
+              value: "warning"
+            - name: REQUEST_TIMEOUT
+              value: "600000"
+            - name: INCOMING_CONNECTION_TIMEOUT
+              value: "600000"
+            - name: destinations
+              valueFrom:
+                configMapKeyRef:
+                  name: approuter-destinations-configmap
+                  key: destinations
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 2
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: approuter-service
+  namespace: super-agent
+spec:
+  selector:
+    app: approuter-app
+  ports:
+    - port: 5000
+      name: approuter-service
+      protocol: TCP
+      targetPort: approuter
+  type: ClusterIP
+
+---
+# Destination Rule for session stickiness
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: approuter-destrule
+  namespace: super-agent
+spec:
+  host: approuter-service
+  trafficPolicy:
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: JSESSIONID
+          path: /
+          ttl: 0s
+
+---
+# Virtual Service for App Router (SSE timeout for document upload progress)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: approuter-virtualservice
+  namespace: super-agent
+spec:
+  hosts:
+    - approuter-service.super-agent.svc.cluster.local
+  http:
+    - match:
+        - port: 5000
+      route:
+        - destination:
+            host: approuter-service.super-agent.svc.cluster.local
+      timeout: 600s
+
+---
+# =============================================================================
+# App Router Configuration
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: approuter-destinations-configmap
+  namespace: super-agent
+data:
+  destinations: >-
+    [
+      {
+        "name": "frontend-app",
+        "url": "http://frontend-service:80",
+        "forwardAuthToken": true
+      },
+      {
+        "name": "backend-app",
+        "url": "http://backend-service:8000",
+        "forwardAuthToken": true
+      },
+      {
+        "name": "backend-mcp-app",
+        "url": "http://backend-mcp-service:3001",
+        "forwardAuthToken": true
+      }
+    ]
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: approuter-xs-app-configmap
+  namespace: super-agent
+data:
+  xs-app.json: |-
+    {
+      "authenticationMethod": "route",
+      "websockets": {
+        "enabled": true
+      },
+      "logout": {
+        "logoutEndpoint": "/logout"
+      },
+      "compression": {
+        "enabled": false
+      },
+      "routes": [
+        {
+          "source": "^/api/documents$",
+          "destination": "backend-mcp-app",
+          "target": "/api/documents",
+          "authenticationType": "xsuaa",
+          "csrfProtection": false
+        },
+        {
+          "source": "^/api/documents/(.*)$",
+          "destination": "backend-mcp-app",
+          "target": "/api/documents/$1",
+          "authenticationType": "xsuaa",
+          "csrfProtection": false
+        },
+        {
+          "source": "^/api/(.*)$",
+          "destination": "backend-app",
+          "target": "/api/$1",
+          "authenticationType": "xsuaa",
+          "csrfProtection": false
+        },
+        {
+          "source": "^/health$",
+          "destination": "backend-app",
+          "target": "/health",
+          "authenticationType": "none",
+          "csrfProtection": false
+        },
+        {
+          "source": "^/(.*)$",
+          "destination": "frontend-app",
+          "target": "/$1",
+          "authenticationType": "xsuaa",
+          "csrfProtection": false
+        }
+      ]
+    }
+
+---
+# =============================================================================
+# Shared ConfigMap
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: super-agent-config
+  namespace: super-agent
+data:
+  # Service Mode
+  LOG_LEVEL: "INFO"
+  MOCK_MODE: "false"
+  AGENTIC_MODE: "true"
+  # Internal service URLs
+  MCP_SERVER_URL: "http://backend-mcp-service:3001/mcp"
+  BACKEND_URL: "http://backend-service:8000"
+  # LLM Configuration
+  LLM_MODEL: "gpt-4.1"
+  LLM_TEMPERATURE: "0.2"
+  LLM_MAX_TOKENS: "1000"
+  SUMMARIZATION_LLM_MODEL: "gpt-4.1"
+  # Audio Transcription
+  AUDIO_MODEL_INSTANCE: "JP"
+  # Document Processing
+  CHUNK_SIZE: "2000"
+  CHUNK_OVERLAP: "200"
+  EMBEDDING_MODEL: "text-embedding-3-small"
+  # HANA Vector Store Tables
+  HANA_VECTOR_TABLE: "SUPER_AGENT_DOCS"
+  HANA_HEADER_TABLE: "SUPER_AGENT_DOCS_HEADER"
+  # Defaults
+  DEFAULT_TENANT_ID: "super-agent"
+  SAP_AI_RESOURCE_GROUP: "generative-ai"
+
+---
+# =============================================================================
+# Secrets are managed separately in secret.yaml (not committed to git)
+# Apply with: kubectl apply -f k8s/secret.yaml
+# =============================================================================
+
+---
+# =============================================================================
+# Persistent Volume Claim for Backend Chat Sessions
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data-pvc
+  namespace: super-agent
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # Use default storage class (Kyma provides one)
+  # storageClassName: default
+
+---
+# =============================================================================
+# Frontend Deployment (Static files served by nginx or node)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: super-agent
+  labels:
+    app: frontend-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend-app
+  template:
+    metadata:
+      labels:
+        app: frontend-app
+    spec:
+      volumes:
+        - name: xsuaa-binding
+          secret:
+            secretName: super-agent-xsuaa-binding-secret
+      containers:
+        - name: frontend-container
+          image: docker.io/gunter04/super-agent-frontend:0.2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: frontend
+          envFrom:
+            - configMapRef:
+                name: super-agent-config
+          volumeMounts:
+            - name: xsuaa-binding
+              mountPath: /etc/secrets/sapcp/xsuaa/super-agent-xsuaa-instance
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 2
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: super-agent
+spec:
+  selector:
+    app: frontend-app
+  ports:
+    - port: 80
+      name: frontend
+      protocol: TCP
+      targetPort: frontend
+  type: ClusterIP
+
+---
+# Virtual Service for frontend (SSE timeout)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: frontend-virtualservice
+  namespace: super-agent
+spec:
+  hosts:
+    - frontend-service.super-agent.svc.cluster.local
+  http:
+    - match:
+        - port: 80
+      route:
+        - destination:
+            host: frontend-service.super-agent.svc.cluster.local
+      timeout: 180s
+
+---
+# =============================================================================
+# Backend (Python FastAPI) Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: super-agent
+  labels:
+    app: backend-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-app
+  template:
+    metadata:
+      labels:
+        app: backend-app
+    spec:
+      initContainers:
+        - name: init-permissions
+          image: busybox
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mkdir -p /data/sessions && chown -R 1000:1000 /data && chmod -R 755 /data
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data
+      containers:
+        - name: backend-container
+          image: docker.io/gunter04/super-agent-backend:0.2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: backend
+          envFrom:
+            - configMapRef:
+                name: super-agent-config
+            - secretRef:
+                name: super-agent-secrets
+          env:
+            - name: PORT
+              value: "8000"
+            - name: CORS_ORIGINS
+              value: "http://frontend-service,http://approuter-service:5000"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /app/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: backend-data-pvc
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 2
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: super-agent
+spec:
+  selector:
+    app: backend-app
+  ports:
+    - port: 8000
+      name: backend
+      protocol: TCP
+      targetPort: backend
+  type: ClusterIP
+
+---
+# Virtual Service for backend (SSE streaming timeout)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: backend-virtualservice
+  namespace: super-agent
+spec:
+  hosts:
+    - backend-service.super-agent.svc.cluster.local
+  http:
+    - match:
+        - port: 8000
+      route:
+        - destination:
+            host: backend-service.super-agent.svc.cluster.local
+      timeout: 300s
+
+---
+# =============================================================================
+# Backend MCP (Node.js) Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-mcp-deployment
+  namespace: super-agent
+  labels:
+    app: backend-mcp-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-mcp-app
+  template:
+    metadata:
+      labels:
+        app: backend-mcp-app
+    spec:
+      containers:
+        - name: backend-mcp-container
+          image: docker.io/gunter04/super-agent-backend-mcp:0.2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: mcp
+          envFrom:
+            - configMapRef:
+                name: super-agent-config
+            - secretRef:
+                name: super-agent-secrets
+          env:
+            - name: PORT
+              value: "3001"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: S4HANA_USER
+              value: ""
+            - name: S4HANA_PASSWORD
+              value: ""
+            - name: S4PRODUCT_ENDPOINT
+              value: ""
+            - name: S4MATERIAL_STOCK_ENDPOINT
+              value: ""
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data-volume
+          emptyDir: {}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 2
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-mcp-service
+  namespace: super-agent
+spec:
+  selector:
+    app: backend-mcp-app
+  ports:
+    - port: 3001
+      name: mcp
+      protocol: TCP
+      targetPort: mcp
+  type: ClusterIP
+
+---
+# Virtual Service for backend-mcp (document upload timeout)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: backend-mcp-virtualservice
+  namespace: super-agent
+spec:
+  hosts:
+    - backend-mcp-service.super-agent.svc.cluster.local
+  http:
+    - match:
+        - port: 3001
+      route:
+        - destination:
+            host: backend-mcp-service.super-agent.svc.cluster.local
+      timeout: 600s
+
+---
+# =============================================================================
+# API Rule for external access (Kyma specific)
+# =============================================================================
+apiVersion: gateway.kyma-project.io/v2
+kind: APIRule
+metadata:
+  name: super-agent-apirule
+  labels:
+    app.kubernetes.io/name: super-agent-apirule
+  annotations: {}
+  namespace: super-agent
+spec:
+  gateway: kyma-system/kyma-gateway
+  rules:
+    - path: /*
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - PATCH
+        - HEAD
+        - OPTIONS
+      timeout: 600
+      service:
+        name: approuter-service
+        port: 5000
+      noAuth: true
+  timeout: 600
+  service:
+    name: approuter-service
+    port: 5000
+  hosts:
+    - super-agent

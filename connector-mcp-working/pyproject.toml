@@ -1,0 +1,13 @@
+[project]
+name = "data-connector-mcp-done"
+version = "0.1.0"
+description = "Part 2: MCP tools for stock data and news search (Complete)"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.0.0",
+    "sap-ai-sdk-gen>=1.0.0",
+    "mcp[cli]>=1.0.0",
+    "langchain-mcp-adapters>=0.1.0,<0.2.0",
+    "langgraph>=0.2.0",
+    "yfinance>=0.2.40",
+]
