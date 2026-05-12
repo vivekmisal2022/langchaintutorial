@@ -1,6 +1,6 @@
 # Python-generated files
 __pycache__/
-*.py[oc]
+# *.py[oc]
 build/
 dist/
 wheels/
