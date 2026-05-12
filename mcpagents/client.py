@@ -1,5 +1,5 @@
 # This code is taken from Carlos' excellent blog,  https://community.sap.com/t5/technology-blog-posts-by-sap/building-an-agentic-ai-system-with-model-context-protocol-mcp-and-sap-btp/ba-p/14090900 with minimal changes for learning purposes
-
+#changed original
 import json
 import asyncio
 from mcp import ClientSession
